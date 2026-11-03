@@ -24,25 +24,36 @@ function Invoke-ApiRequest {
         }
     }
     catch {
-        $ex = $_.Exception
-        if ($ex.Response) {
-            $stream = $ex.Response.GetResponseStream()
-            $reader = New-Object System.IO.StreamReader($stream)
-            $content = $reader.ReadToEnd()
-            $parsed = $null
-            try { $parsed = $content | ConvertFrom-Json } catch {}
-            return @{
-                StatusCode = [int]$ex.Response.StatusCode
-                Data = $parsed
-            }
+        $statusCode = 0
+        $parsed = $null
+        if ($_.Exception -and $_.Exception.Response) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+        $rawContent = ""
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            $rawContent = $_.ErrorDetails.Message
+        } elseif ($_.Exception -and $_.Exception.Response) {
+            try {
+                $stream = $_.Exception.Response.GetResponseStream()
+                if ($stream) {
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $rawContent = $reader.ReadToEnd()
+                }
+            } catch {}
+        }
+        if ($rawContent) {
+            try {
+                $parsed = $rawContent | ConvertFrom-Json
+            } catch {}
         }
         return @{
-            StatusCode = 0
-            Data = $null
-            Error = $ex.Message
+            StatusCode = $statusCode
+            Data = $parsed
         }
     }
 }
+
+Add-Type -AssemblyName System.Web -ErrorAction SilentlyContinue
 
 $results = [System.Collections.Generic.List[PSObject]]::new()
 
@@ -120,7 +131,6 @@ $domainMap = @{
 
 foreach ($domKey in $domainMap.Keys) {
     $expectedCount = $domainMap[$domKey]
-    $encodedParam = [System.Web.HttpUtility]::UrlEncode([System.Web.HttpUtility]::UrlDecode($domKey))
     $res = Invoke-ApiRequest -Uri "$BaseUrl/api/opportunities?domain=$domKey"
     $pass = ($res.StatusCode -eq 200) -and ($res.Data.pagination.total -eq $expectedCount)
     Record-Test -Endpoint "GET /api/opportunities?domain=$domKey" -Test "Domain filter '$domKey'" -Expected "200, total $expectedCount" -Actual "$($res.StatusCode), total $($res.Data.pagination.total)" -Passed $pass
@@ -307,7 +317,7 @@ Write-Host "`nTest Execution Finished. Results Summary:`n" -ForegroundColor Gree
 
 $results | Format-Table -Property Endpoint, Test, Expected, Actual, Status -AutoSize
 
-$failedCount = ($results | Where-Object { $_.Status -eq "FAIL" }).Count
+$failedCount = @($results | Where-Object { $_.Status -eq "FAIL" }).Count
 if ($failedCount -eq 0) {
     Write-Host "`nAll $($results.Count) tests PASSED successfully!`n" -ForegroundColor Green
     exit 0
